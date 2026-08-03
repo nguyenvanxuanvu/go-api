@@ -23,7 +23,7 @@ func helloHandler(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(helloResponse{
 		Service: "go-api",
-		Message: "hello from go-api",
+		Message: "hello from go-api xuanvu",
 	})
 }
 
