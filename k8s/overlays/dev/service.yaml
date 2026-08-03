@@ -3,11 +3,9 @@ kind: Service
 metadata:
   name: go-api
 spec:
-  selector:
-    app: go-api
   ports:
     - port: 80
       targetPort: http
       protocol: TCP
       name: http
-  type: NodePort
+      nodePort: 30080

@@ -4,6 +4,8 @@ namespace: go-api-prod
 resources:
   - namespace.yaml
   - ../../base
+patches:
+  - path: service.yaml
 images:
   - name: APP_IMAGE
     newName: ghcr.io/example/go-api
