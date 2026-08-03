@@ -94,14 +94,24 @@ jobs:
           SSH_KNOWN_HOSTS: ${{ secrets.EC2_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
+          trap 'echo "[ERROR] Prepare SSH failed at line $LINENO"' ERR
+
+          echo "[INFO] Validating required SSH secrets"
           test -n "$SSH_PRIVATE_KEY"
           test -n "$SSH_KNOWN_HOSTS"
+
+          echo "[INFO] Creating ~/.ssh files"
           mkdir -p "$HOME/.ssh"
           chmod 700 "$HOME/.ssh"
           printf "%s\n" "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
           chmod 600 "$HOME/.ssh/id_ed25519"
           printf "%s\n" "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
           chmod 644 "$HOME/.ssh/known_hosts"
+
+          echo "[INFO] SSH key fingerprint"
+          ssh-keygen -lf "$HOME/.ssh/id_ed25519"
+          echo "[INFO] known_hosts entries"
+          wc -l "$HOME/.ssh/known_hosts"
 
       - name: Deploy to EC2 via SSH
         env:
@@ -112,26 +122,59 @@ jobs:
           EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT }}
         run: |
           set -euo pipefail
+          trap 'echo "[ERROR] Deploy failed at line $LINENO"' ERR
+
+          echo "[INFO] Input validation"
           test -n "$EC2_HOST"
           test -n "$EC2_USER"
           SSH_PORT="${EC2_SSH_PORT:-22}"
           TMP_DIR="/tmp/go-api-${{ github.run_id }}-${TARGET_ENV}"
 
-          ssh -p "$SSH_PORT" "$EC2_USER@$EC2_HOST" "mkdir -p '$TMP_DIR'"
-          scp -P "$SSH_PORT" -r k8s "$EC2_USER@$EC2_HOST:$TMP_DIR/"
+          echo "[INFO] Runner network debug"
+          echo "Target: $EC2_USER@$EC2_HOST:$SSH_PORT"
+          getent hosts "$EC2_HOST" || true
 
+          echo "[INFO] SSH preflight"
+          ssh -v -p "$SSH_PORT" "$EC2_USER@$EC2_HOST" "echo '[REMOTE] ssh-ok'"
+
+          echo "[INFO] Create remote temp dir: $TMP_DIR"
+          ssh -p "$SSH_PORT" "$EC2_USER@$EC2_HOST" "mkdir -p '$TMP_DIR'"
+
+          echo "[INFO] Copy k8s manifests"
+          scp -v -P "$SSH_PORT" -r k8s "$EC2_USER@$EC2_HOST:$TMP_DIR/"
+
+          echo "[INFO] Run remote deploy script"
           ssh -p "$SSH_PORT" "$EC2_USER@$EC2_HOST" \
             "IMAGE='$IMAGE' TARGET_ENV='$TARGET_ENV' TMP_DIR='$TMP_DIR' bash -s" <<'REMOTE'
-          set -euo pipefail
+          set -euxo pipefail
+          trap 'echo "[REMOTE-ERROR] Failed at line $LINENO"' ERR
+
+          echo "[REMOTE] Host and user"
+          hostname
+          whoami
 
           command -v kubectl >/dev/null 2>&1 || { echo "kubectl is required on EC2"; exit 1; }
           command -v kustomize >/dev/null 2>&1 || { echo "kustomize is required on EC2"; exit 1; }
-          kubectl get nodes >/dev/null
 
+          echo "[REMOTE] Tool versions"
+          kubectl version --client
+          kustomize version
+
+          echo "[REMOTE] Cluster access check"
+          kubectl get nodes >/dev/null
+          kubectl get nodes -o wide
+
+          echo "[REMOTE] Apply manifests"
           cd "$TMP_DIR/k8s/overlays/$TARGET_ENV"
           kustomize edit set image APP_IMAGE="$IMAGE"
           kubectl apply -k .
+
+          echo "[REMOTE] Rollout status"
           kubectl rollout status deployment/go-api -n "go-api-$TARGET_ENV" --timeout=120s
+
+          echo "[REMOTE] Workload summary"
           kubectl -n "go-api-$TARGET_ENV" get pods,svc
+
+          echo "[REMOTE] Cleanup temp dir"
           rm -rf "$TMP_DIR"
           REMOTE
